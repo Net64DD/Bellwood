@@ -139,6 +139,71 @@ python3 -m http.server -d build-web 8080
 
 Open `http://localhost:8080/bellwood.html` and pick your disc image. It is read in the browser, and everything the game writes is kept in the site's storage.
 
+### Xbox (Developer Mode)
+
+Builds an x64 UWP app package for a retail Xbox in [Developer Mode](https://learn.microsoft.com/en-us/windows/uwp/xbox-apps/devkit-activation). Series X|S is the tested target; Xbox One has a much smaller memory budget and is untested.
+
+Needs Visual Studio 2022 with both the **Universal Windows Platform development** workload and its C++ component, which are separate from the desktop C++ workload:
+
+```sh
+"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe" modify ^
+  --installPath "C:\Program Files\Microsoft Visual Studio\2022\Community" ^
+  --add Microsoft.VisualStudio.Workload.Universal ^
+  --add Microsoft.VisualStudio.ComponentGroup.UWP.VC --passive --norestart
+```
+
+The package has to be signed with a certificate whose subject matches the manifest's `Publisher` (`CN=Lywx` by default). Create one once — it stays in your certificate store, so nothing secret lands on disk:
+
+```powershell
+$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=Lywx" -KeyUsage DigitalSignature `
+  -FriendlyName "Bellwood Xbox Dev Signing" -CertStoreLocation "Cert:\CurrentUser\My" `
+  -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}") `
+  -NotAfter (Get-Date).AddYears(3)
+$cert.Thumbprint
+```
+
+Build with **Ninja and clang-cl**, from a shell where `vcvars64.bat` has been run — Ninja needs it to resolve MSVC's `link.exe` and `rc.exe` rather than any same-named tools earlier on `PATH`:
+
+```sh
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+cmake -S . -B build-uwp -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/uwp.bellwood.toolchain.cmake \
+  -DUWP_PACKAGE_CERT_THUMBPRINT=<thumbprint from above>
+cmake --build build-uwp --target bellwood_uwp_package
+```
+
+That produces a signed `build-uwp/Bellwood.msix`.
+
+Two notes on why this target is built differently from every other one:
+
+- **clang-cl is required, not optional.** The decompiled structs only lay out correctly under clang-cl; MSVC gives `sizeof(Private_c) == 0x2398` against the required `0x2440`, which the `static_assert` in `m_private.h` catches. The desktop Windows build has the same requirement and meets it with `-T ClangCL`.
+- **The package is assembled by hand.** MSBuild ships no ClangCL platform toolset for the UWP application type (only `v143`), so there is no way to have MSBuild both compile this code and build the appx. Instead CMake links the executable with `/APPCONTAINER` against the store CRT, then packs it with `MakeAppx` and signs it with `SignTool`. The `bellwood_uwp_package` target does all of that.
+
+For CI, where there is no certificate store to read from, use `-DUWP_PACKAGE_CERT=<path to .pfx>` (plus `-DUWP_PACKAGE_CERT_PASSWORD=` if it has one) instead. A different publisher needs `-DUWP_PACKAGE_PUBLISHER="CN=..."` to match the certificate.
+
+The console also has to trust the certificate before it will accept the package. Export the public half (no private key) and install it into **Local Machine → Trusted People** on the console via the Device Portal, or on the PC if you deploy from Visual Studio:
+
+```powershell
+Export-Certificate -Cert "Cert:\CurrentUser\My\<thumbprint>" -FilePath bellwood-public.cer
+```
+
+Deploy with the helper script, which uploads through the console's Device Portal and waits for the install. Pass the certificate on the first deploy so the console adds it to Trusted People:
+
+```powershell
+tools\deploy-xbox.ps1 -Console 192.168.100.66 -Package build-uwp\Bellwood.msix -Certificate bellwood-public.cer
+```
+
+Repeat deploys install over the top, which is an update and keeps the app's LocalState — the game archive, saves and mods all survive. Pass `-Clean` to uninstall first instead, which **deletes** all of it.
+
+Dropping the `.msix` on the Device Portal's **Add** button in a browser does the same thing by hand. Visual Studio's remote deploy is not available for this target, because the package is not built by MSBuild.
+
+The console has no file picker, so the game archive is uploaded rather than chosen. In the Device Portal's file explorer, put `ac.o2r` in the app's **LocalState** folder; the same folder holds `Bellwood.cfg.json`, `save/`, `mods/` and `logs/`. Dropping a disc image (`.iso`, `.gcm`, `.ciso`, `.gcz`) there instead works too — the app finds it on the next launch and extracts on-console, which is slow but needs no PC.
+
+Two things differ from the desktop build by necessity:
+
+- **DirectX 11 only.** There is no OpenGL or Vulkan driver on the console, and the renderer presents to a `CoreWindow` swapchain instead of an `HWND`.
+- **No scripting or mod DLLs.** The app container forbids runtime code generation and `LoadLibrary`, so the TCC-based scripting runtime is compiled out, as it is for the other cross-platform targets.
+
 <a href="https://github.com/Kenix3/libultraship/">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./docs/poweredbylus.darkmode.png">

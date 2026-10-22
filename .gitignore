@@ -49,6 +49,7 @@ temp/
 /build-ios/
 /build-iossim/
 /build-web/
+/build-uwp/
 !/CMakeLists.txt
 
 # Game images

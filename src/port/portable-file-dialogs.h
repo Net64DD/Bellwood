@@ -12,6 +12,69 @@
 
 #pragma once
 
+#ifdef __WINRT__
+
+#include <string>
+#include <vector>
+
+namespace pfd {
+
+enum class opt : uint8_t { none = 0, multiselect = 0x1, force_overwrite = 0x2, force_path = 0x4 };
+
+class settings {
+  public:
+    static bool available() {
+        return false;
+    }
+    static void verbose(bool) {
+    }
+    static void rescan() {
+    }
+};
+
+namespace internal {
+class dialog {
+  public:
+    bool ready(int /*timeout*/ = 20) const {
+        return true;
+    }
+    bool kill() const {
+        return true;
+    }
+};
+} // namespace internal
+
+class open_file : public internal::dialog {
+  public:
+    template <typename... Args> open_file(Args&&...) {
+    }
+    std::vector<std::string> result() const {
+        return {};
+    }
+};
+
+class save_file : public internal::dialog {
+  public:
+    template <typename... Args> save_file(Args&&...) {
+    }
+    std::string result() const {
+        return {};
+    }
+};
+
+class select_folder : public internal::dialog {
+  public:
+    template <typename... Args> select_folder(Args&&...) {
+    }
+    std::string result() const {
+        return {};
+    }
+};
+
+} // namespace pfd
+
+#else
+
 #if _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN 1
@@ -1768,3 +1831,5 @@ inline std::string select_folder::result() {
 #endif // PFD_SKIP_IMPLEMENTATION
 
 } // namespace pfd
+
+#endif // __WINRT__

@@ -18,7 +18,7 @@
 #include <port/Engine.h>
 
 #include "Companion.h"
-#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(__WINRT__)
 #include "portable-file-dialogs.h"
 #endif
 
@@ -210,7 +210,8 @@ bool GameExtractor::RunStandalone(std::string disc) {
 
 bool GameExtractor::SelectGameFromUI(bool pickFolder) {
     sLastError.clear();
-#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__SWITCH__) && !defined(__EMSCRIPTEN__)
+#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__SWITCH__) && !defined(__EMSCRIPTEN__) && \
+    !defined(__WINRT__)
     if (!pfd::settings::available()) {
         SPDLOG_ERROR("portable-file-dialogs is not available on this system.");
         sLastError = "No file dialog is available. Pass the disc path on the command line instead.";

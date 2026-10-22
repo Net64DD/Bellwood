@@ -260,6 +260,9 @@ GameEngine::GameEngine() {
     CVarRegisterInteger(CVAR_ENHANCEMENT("Graphics.DitherNoise"), 0);
     CVarRegisterInteger(CVAR_SETTING("InterpolationFPS"), 60);
     CVarRegisterInteger(CVAR_SETTING("FrameRateMode"), FRAME_RATE_60);
+#ifdef __WINRT__
+    CVarRegisterInteger(CVAR_IMGUI_CONTROLLER_NAV, 1);
+#endif
 
     gsFast3dWindow = std::make_shared<Fast::Fast3dWindow>(std::vector<std::shared_ptr<Ship::GuiWindow>>({}), config,
                                                           consoleVariables);
@@ -980,7 +983,7 @@ void GameEngine::RunExtract(int argc, char* argv[]) {
         }
         switch (extractStep) {
             case ES_PORT_ARCHIVE: {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__WINRT__)
                 extractStep = ES_WINDOWS;
 #else
                 extractStep = args.size() > 0 ? ES_EXTRACT_ARGS : ES_EXTRACT;
@@ -1163,6 +1166,15 @@ void GameEngine::RunExtract(int argc, char* argv[]) {
 #if defined(__EMSCRIPTEN__)
                         pickFolder = false;
                         promptStep = PS_FIRST;
+                        continue;
+#elif defined(__WINRT__)
+                        promptStep = PS_WAIT;
+                        PortGui::RegisterPopup(
+                            "Add Your Disc",
+                            "Upload " + std::string(GAME_ARCHIVE) +
+                                ", or your Animal Crossing disc image\n(.iso, .gcm, .ciso, .gcz), to this app's "
+                                "LocalState folder\nusing the Xbox Device Portal, then choose Retry.",
+                            "Retry", "Skip", [&]() { promptStep = PS_LOCAL; }, [&]() { extractStep = GS_LOAD; });
                         continue;
 #elif defined(__IOS__) || defined(__ANDROID__)
                         promptStep = PS_WAIT;

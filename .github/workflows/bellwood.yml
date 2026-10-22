@@ -244,6 +244,148 @@ jobs:
             Write-Host "No threat detections recorded."
           }
 
+  build-xbox:
+    name: Xbox (Dev Mode)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v6
+        with:
+          key: xbox-vcpkg-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            xbox-vcpkg-
+          path: |
+            ~/AppData/Local/vcpkg/archives
+
+      - name: Set up the Universal Windows Platform workload
+        shell: pwsh
+        run: |
+          # The app container CRT (lib/x64/store), the UWP build of
+          # d3dcompiler_47.dll and the VCLibs framework package all come from this
+          # workload. CMake fails with a specific error for each if it is absent,
+          # so install it when the runner image does not already carry it.
+          $root = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $vs = & "$root\vswhere.exe" -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found on the runner" }
+
+          if (-not (Get-ChildItem "$vs\VC\Tools\MSVC\*\lib\x64\store" -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing the UWP workload into $vs"
+            # Start-Process -Wait rather than the installer's own --wait: some
+            # installer builds reject that flag outright with exit code 87.
+            $p = Start-Process -FilePath "$root\vs_installer.exe" -Wait -PassThru -ArgumentList @(
+              'modify', '--installPath', "`"$vs`"",
+              '--add', 'Microsoft.VisualStudio.Workload.Universal',
+              '--add', 'Microsoft.VisualStudio.ComponentGroup.UWP.VC',
+              '--quiet', '--norestart', '--nocache')
+            # 3010 is "installed, reboot pending", which does not affect this build.
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+              throw "UWP workload install failed with exit code $($p.ExitCode)"
+            }
+          }
+
+          if (-not (Get-ChildItem "$vs\VC\Tools\MSVC\*\lib\x64\store" -ErrorAction SilentlyContinue)) {
+            throw "App container CRT (lib/x64/store) still missing after installing the UWP workload"
+          }
+
+          $vcvars = "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          "VCVARS=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VSPATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          # A step only inherits the environment the runner started with, so a
+          # PATH entry written by choco is not visible to later steps. Resolve
+          # ninja here and publish its directory through GITHUB_PATH.
+          $ninja = (Get-Command ninja -ErrorAction SilentlyContinue).Source
+          if (-not $ninja) {
+            $bundled = "$env:VSPATH\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+            if (Test-Path $bundled) {
+              $ninja = $bundled
+            } else {
+              choco install ninja -y --no-progress
+              $ninja = "C:\ProgramData\chocolatey\bin\ninja.exe"
+            }
+            if (-not (Test-Path $ninja)) { throw "ninja not found after install" }
+            Split-Path $ninja | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+          Write-Host "ninja: $ninja"
+
+      - name: Create a sideloading certificate
+        shell: pwsh
+        run: |
+          # Self-signed and generated per run, so CI needs no signing secrets. A
+          # Dev Mode console only requires that the certificate be trusted, which
+          # the deploy script does from the .cer shipped in the artifact. The
+          # subject must match the package publisher exactly or the console
+          # rejects the package.
+          $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=Bellwood CI" `
+            -KeyUsage DigitalSignature -FriendlyName "Bellwood CI" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}") `
+            -NotAfter (Get-Date).AddYears(3)
+          Export-Certificate -Cert $cert -FilePath bellwood-ci.cer | Out-Null
+          "UWP_CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Verify the toolchain
+        shell: cmd
+        run: |
+          call "%VCVARS%" || exit /b 1
+          where ninja || exit /b 1
+          where clang-cl || exit /b 1
+          where makeappx || exit /b 1
+          where signtool || exit /b 1
+          if not exist "%VCToolsInstallDir%lib\x64\store" exit /b 1
+          echo VCToolsInstallDir=%VCToolsInstallDir%
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "%VCVARS%" || exit /b 1
+          REM vcvars points VCPKG_ROOT at the vcpkg bundled with Visual Studio, which
+          REM is not a git checkout, so automate-vcpkg fails trying to update it.
+          REM Cleared (quoted, or the value keeps the space before the newline) so it
+          REM falls back to cloning into the build directory.
+          set "VCPKG_ROOT="
+          cmake -S . -B build-uwp -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=cmake/uwp.bellwood.toolchain.cmake ^
+            -DUWP_PACKAGE_PUBLISHER="CN=Bellwood CI" ^
+            -DUWP_PACKAGE_CERT_THUMBPRINT=%UWP_CERT_THUMBPRINT% || exit /b 1
+          cmake --build build-uwp --target bellwood_uwp_package || exit /b 1
+
+      - name: Create package
+        shell: pwsh
+        run: |
+          mkdir Bellwood-xbox
+          Move-Item build-uwp/Bellwood.msix Bellwood-xbox/
+          Copy-Item bellwood-ci.cer Bellwood-xbox/
+          Copy-Item tools/deploy-xbox.ps1 Bellwood-xbox/
+          Copy-Item README.md Bellwood-xbox/readme.txt
+
+          # Without the VCLibs framework package on the console the app fails to
+          # activate with 0x8027025B, and it is only needed once per console.
+          $vclibs = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0\Appx\Retail\x64\Microsoft.VCLibs.x64.14.00.appx" -ErrorAction SilentlyContinue
+          if (-not $vclibs) { throw "VCLibs framework package not found; the app would not activate on the console" }
+          Copy-Item $vclibs.FullName Bellwood-xbox/
+
+          # The game archive is generated on the console from the user's own disc,
+          # so the package deliberately ships without one. Everything else it
+          # needs at startup is inside the msix.
+          if (-not (Test-Path Bellwood-xbox/Bellwood.msix)) { throw "Package was not produced" }
+
+      - name: Upload build
+        uses: actions/upload-artifact@v7
+        with:
+          name: Bellwood-xbox
+          path: Bellwood-xbox
+
   build-macos:
     name: macOS
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository

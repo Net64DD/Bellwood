@@ -177,12 +177,16 @@ void PortMenu::OnInit(const nlohmann::json& initArgs) {
             "Multi-viewports not supported" } },
         { DISABLE_FOR_NOT_DIRECTX,
           { [](disabledInfo& info) -> bool {
-               return ShipCompat::GetWindow()->GetWindowBackend() != Fast::WindowBackend::FAST3D_DXGI_DX11;
+               const auto backend = ShipCompat::GetWindow()->GetWindowBackend();
+               return backend != Fast::WindowBackend::FAST3D_DXGI_DX11 &&
+                      backend != Fast::WindowBackend::FAST3D_UWP_DX11;
            },
             "Available Only on DirectX" } },
         { DISABLE_FOR_DIRECTX,
           { [](disabledInfo& info) -> bool {
-               return ShipCompat::GetWindow()->GetWindowBackend() == Fast::WindowBackend::FAST3D_DXGI_DX11;
+               const auto backend = ShipCompat::GetWindow()->GetWindowBackend();
+               return backend == Fast::WindowBackend::FAST3D_DXGI_DX11 ||
+                      backend == Fast::WindowBackend::FAST3D_UWP_DX11;
            },
             "Not Available on DirectX" } },
         { DISABLE_FOR_MATCH_REFRESH_RATE_ON,
